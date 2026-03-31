@@ -7,6 +7,7 @@ import path from "node:path";
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
 import fs from 'fs';
+import fetch from 'cross-fetch';
 import { createConnection as createTcpConnection } from 'node:net';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -489,7 +490,7 @@ function createProxySettingsWindow(): void {
     modal: true,
     show: false,
     webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
+      preload: path.join(__dirname, 'proxy-preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
     }
@@ -524,6 +525,27 @@ function loadConfig(): void {
       } catch (e) {
         console.error('Error in onBeforeSendHeaders:', e);
         callback({ requestHeaders: details.requestHeaders });
+      }
+    });
+
+    session.defaultSession.webRequest.onHeadersReceived({ urls: ['*://*/*'] }, (details, callback) => {
+      try {
+        const responseHeaders = details.responseHeaders || {};
+        
+        if (!responseHeaders['Access-Control-Allow-Origin']) {
+          responseHeaders['Access-Control-Allow-Origin'] = ['*'];
+        }
+        if (!responseHeaders['Access-Control-Allow-Methods']) {
+          responseHeaders['Access-Control-Allow-Methods'] = ['GET, POST, OPTIONS'];
+        }
+        if (!responseHeaders['Access-Control-Allow-Headers']) {
+          responseHeaders['Access-Control-Allow-Headers'] = ['Content-Type, Authorization, Range'];
+        }
+        
+        callback({ responseHeaders });
+      } catch (e) {
+        console.error('Error in onHeadersReceived:', e);
+        callback({ responseHeaders: details.responseHeaders });
       }
     });
 
@@ -568,6 +590,7 @@ async function createWindow(): Promise<void> {
       webPreferences: {
         preload: path.join(__dirname, 'preload.js'),
         contextIsolation: true,
+        webSecurity: true,
         devTools: false,
       }
     });
@@ -1300,4 +1323,3 @@ autoUpdater.on('update-downloaded', (info) => {
   console.log('Update downloaded.', info);
   showUpdateAvailableDialog();
 });
-

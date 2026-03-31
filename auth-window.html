@@ -199,11 +199,9 @@
     </div>
 
     <script>
-      const { ipcRenderer } = require("electron");
-
       let appConfig = null;
 
-      ipcRenderer.invoke("get-stored-credentials").then((credentials) => {
+      authAPI.getStoredCredentials().then((credentials) => {
         const loginField = document.getElementById("login");
         const passwordField = document.getElementById("password");
         const submitBtn = document.getElementById("submit-btn");
@@ -219,7 +217,7 @@
       });
 
       document.getElementById("cancel-btn").addEventListener("click", () => {
-        ipcRenderer.send("auth-cancelled");
+        authAPI.cancelAuth();
       });
 
       document.getElementById("auth-form").addEventListener("submit", (e) => {
@@ -233,7 +231,7 @@
           return;
         }
 
-        ipcRenderer.send("auth-submitted", { login, password });
+        authAPI.submitAuth({ login, password });
       });
 
       function showError(message) {
@@ -246,13 +244,13 @@
         }, 5000);
       }
 
-      ipcRenderer.on("auth-error", (event, message) => {
+      authAPI.onAuthError((message) => {
         showError(message);
       });
 
       document.addEventListener("keydown", (e) => {
         if (e.key === "Escape") {
-          ipcRenderer.send("auth-cancelled");
+          authAPI.cancelAuth();
         }
 
         const isInputField = e.target.tagName === "INPUT";
@@ -274,7 +272,7 @@
       document.addEventListener("contextmenu", (e) => {
         if (e.target.tagName === "INPUT") {
           e.preventDefault();
-          ipcRenderer.send("show-input-context-menu");
+          authAPI.showInputContextMenu();
         }
       });
     </script>

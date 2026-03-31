@@ -783,8 +783,6 @@
     </div>
 
     <script>
-      const { ipcRenderer } = require("electron");
-
       let currentStep = 1;
       let maxAvailableStep = 1;
       let magnetUrl = "";
@@ -1142,7 +1140,7 @@
         }
       }
 
-      ipcRenderer.on("init-wizard", (event, data) => {
+      wizardAPI.onInitWizard((data) => {
         magnetUrl = data.magnetUrl;
         serversData = data.servers;
         monitorServerUrl = data.monitorServerUrl;
@@ -1182,7 +1180,7 @@
         });
       });
 
-      ipcRenderer.on("external-player-updated", (event, playerInfo) => {
+      wizardAPI.onExternalPlayerUpdated((playerInfo) => {
         updateExternalPlayerDisplay(playerInfo);
         if (playerInfo) {
           addLog(`Плеер изменен: ${playerInfo.name}`, "success");
@@ -1208,7 +1206,7 @@
           addLog(`Выбран сервер: ${server.location}`, "info");
           updateStep(2);
 
-          ipcRenderer.send("server-selected", {
+          wizardAPI.selectServer({
             serverIndex: serverIndex,
           });
         });
@@ -1252,17 +1250,17 @@
           addLog(`Выбрано файлов: ${selectedFiles.length}`);
           updateStep(5);
 
-          ipcRenderer.send("files-selected", { selectedFiles });
+          wizardAPI.selectFiles({ selectedFiles });
         });
 
       document
         .getElementById("btnSavePlaylist")
         .addEventListener("click", () => {
-          ipcRenderer.send("save-playlist", { hash: torrentHash });
+          wizardAPI.savePlaylist({ hash: torrentHash });
         });
 
       document.getElementById("btnCopyMagnet").addEventListener("click", () => {
-        ipcRenderer.send("copy-magnet", { magnetUrl });
+        wizardAPI.copyMagnet({ magnetUrl });
       });
 
       document.getElementById("btnCopyLog").addEventListener("click", () => {
@@ -1273,17 +1271,17 @@
         .getElementById("btnInternalPlayer")
         .addEventListener("click", () => {
           addLog("Выбран внутренний плеер (mpv)");
-          ipcRenderer.send("player-selected", { playerType: "internal" });
+          wizardAPI.selectPlayer({ playerType: "internal" });
         });
 
       document
         .getElementById("btnExternalPlayer")
         .addEventListener("click", () => {
           addLog("Выбор внешнего плеера...");
-          ipcRenderer.send("choose-player-path");
+          wizardAPI.choosePlayerPath();
         });
 
-      ipcRenderer.on("step-progress", (event, data) => {
+      wizardAPI.onStepProgress((data) => {
         if (data.step !== null && data.step !== undefined) {
           updateStep(data.step);
         }
@@ -1292,13 +1290,13 @@
         }
       });
 
-      ipcRenderer.on("torrent-added", (event, data) => {
+      wizardAPI.onTorrentAdded((data) => {
         torrentHash = data.hash;
         addLog(`Торрент добавлен. Hash: ${data.hash}`, "success");
         updateStep(3);
       });
 
-      ipcRenderer.on("files-received", (event, data) => {
+      wizardAPI.onFilesReceived((data) => {
         torrentFiles = data.files;
         addLog(`Получено файлов: ${data.files.length}`, "success");
 
@@ -1331,7 +1329,7 @@
           downloadBtn.title = "Открыть ссылку на файл в браузере";
           downloadBtn.addEventListener("click", (e) => {
             e.stopPropagation();
-            ipcRenderer.send("download-file", { fileId: file.id, filePath: file.path });
+            wizardAPI.downloadFile({ fileId: file.id, filePath: file.path });
           });
 
           fileItem.appendChild(checkbox);
@@ -1359,7 +1357,7 @@
         }
       });
 
-      ipcRenderer.on("player-launched", (event, data) => {
+      wizardAPI.onPlayerLaunched((data) => {
         addLog(
           "Плеер запущен успешно, может потребоваться время для показа окна на время первого кэширования",
           "success"
@@ -1395,14 +1393,14 @@
         }, 100);
       });
 
-      ipcRenderer.on("error", (event, data) => {
+      wizardAPI.onError((data) => {
         addLog(`Ошибка: ${data.message}`, "error");
         setStepError(currentStep);
       });
 
-      ipcRenderer.on("player-path-selected", (event, data) => {
+      wizardAPI.onPlayerPathSelected((data) => {
         addLog(`Выбран плеер: ${data.path}`, "success");
-        ipcRenderer.send("player-selected", {
+        wizardAPI.selectPlayer({
           playerType: "custom",
           path: data.path,
         });
@@ -1433,11 +1431,11 @@
         }
       }
 
-      ipcRenderer.on("auto-choose-player", (event, data) => {
+      wizardAPI.onAutoChoosePlayer((data) => {
         document.getElementById("btnExternalPlayer").click();
       });
 
-      ipcRenderer.on("stats-update", (event, data) => {
+      wizardAPI.onStatsUpdate((data) => {
         if (data.stats) {
           const stats = data.stats;
           currentStats = stats; // Store current stats

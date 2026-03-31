@@ -21,8 +21,10 @@
     "electron-updater": "^6.3.9"
   },
   "scripts": {
-    "build": "tsc && cp src/preload.js dist/preload.js",
+    "build": "tsc && cp src/preload.js dist/preload.js && cp src/wizard-preload.js dist/wizard-preload.js && cp src/auth-preload.js dist/auth-preload.js && cp src/magnet-preload.js dist/magnet-preload.js && cp src/mirror-preload.js dist/mirror-preload.js && cp src/proxy-preload.js dist/proxy-preload.js",
+    "build:dev": "tsc && copy src\\preload.js dist\\preload.js && copy src\\wizard-preload.js dist\\wizard-preload.js && copy src\\auth-preload.js dist\\auth-preload.js && copy src\\magnet-preload.js dist\\magnet-preload.js && copy src\\mirror-preload.js dist\\mirror-preload.js && copy src\\proxy-preload.js dist\\proxy-preload.js",
     "start": "yarn build && cp -r prebuilts dist/prebuilts && electron .",
+    "start:win": "yarn build:dev && xcopy prebuilts dist\\prebuilts /E /I /Y && electron .",
     "build:win": "rm -rf ./dist && yarn build && electron-builder --win --publish=never",
     "build:mac": "rm -rf ./dist && yarn build && electron-builder --mac --x64 --arm64 --publish=never",
     "build:linux": "rm -rf ./dist && yarn build && electron-builder --linux --publish=never"
@@ -39,10 +41,17 @@
       "dist/main.js",
       "dist/torrents.js",
       "dist/preload.js",
+      "dist/wizard-preload.js",
+      "dist/auth-preload.js",
+      "dist/magnet-preload.js",
+      "dist/mirror-preload.js",
+      "dist/proxy-preload.js",
       "package.json",
       "loader.html",
       "torrent-wizard.html",
       "magnet-input.html",
+      "auth-window.html",
+      "mirror-selection.html",
       "proxy-settings.html",
       "prebuilts/adblock.txt",
       "icons/256x256.png"

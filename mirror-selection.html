@@ -249,15 +249,13 @@
     </div>
 
     <script>
-      const { ipcRenderer } = require("electron");
-
       let currentMirror = "";
       let defaultMirror = "";
 
       async function init() {
         try {
-          const config = await ipcRenderer.invoke("get-app-config");
-          const storedMirror = await ipcRenderer.invoke("get-stored-mirror");
+          const config = await mirrorAPI.getAppConfig();
+          const storedMirror = await mirrorAPI.getStoredMirror();
 
           defaultMirror = config.main_site_url;
           currentMirror = storedMirror || defaultMirror;
@@ -271,7 +269,7 @@
       }
 
       function resetToDefault() {
-        ipcRenderer.send("mirror-selected", defaultMirror);
+        mirrorAPI.selectMirror(defaultMirror);
       }
 
       function applyManualMirror() {
@@ -285,7 +283,7 @@
 
         try {
           new URL(url);
-          ipcRenderer.send("mirror-selected", url);
+          mirrorAPI.selectMirror(url);
         } catch (error) {
           alert(
             "Пожалуйста, введите корректный URL (например: https://example.com)"
@@ -299,13 +297,13 @@
           popup.style.display = "none";
           return;
         }
-        const mirrors = await ipcRenderer.invoke("get-mirrors-list");
+        const mirrors = await mirrorAPI.getMirrorsList();
         popup.textContent = mirrors || "Нет данных";
         popup.style.display = "block";
       }
 
       function cancel() {
-        ipcRenderer.send("mirror-cancelled");
+        mirrorAPI.cancel();
       }
 
       document.addEventListener("DOMContentLoaded", function () {

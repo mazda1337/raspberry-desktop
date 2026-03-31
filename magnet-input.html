@@ -204,8 +204,6 @@
     </div>
 
     <script>
-      const { ipcRenderer } = require("electron");
-
       const magnetInput = document.getElementById("magnetInput");
       const okBtn = document.getElementById("okBtn");
       const cancelBtn = document.getElementById("cancelBtn");
@@ -253,12 +251,12 @@
         const error = validateMagnet(magnet);
 
         if (!error) {
-          ipcRenderer.send("magnet-input-result", { magnet });
+          magnetAPI.submitResult({ magnet });
         }
       }
 
       function handleCancel() {
-        ipcRenderer.send("magnet-input-result", null);
+        magnetAPI.submitResult(null);
       }
 
       okBtn.addEventListener("click", handleOk);

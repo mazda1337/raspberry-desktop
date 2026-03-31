@@ -5,7 +5,7 @@ import fs from 'fs';
 import Store from 'electron-store';
 import { AppConfig } from './main.js'
 import { fileURLToPath } from 'url';
-import { dirname } from 'path';
+import path, { dirname } from 'path';
 
 
 const __filename = fileURLToPath(import.meta.url);
@@ -243,9 +243,9 @@ function createWizardWindow(magnetUrl: string): void {
     modal: false,
     autoHideMenuBar: true,
     webPreferences: {
-      contextIsolation: false,
-      nodeIntegration: true,
-      webSecurity: false,
+      preload: path.join(__dirname, 'wizard-preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
       devTools: false
     }
   });
@@ -261,6 +261,8 @@ function createWizardWindow(magnetUrl: string): void {
     wizardWindow?.maximize();
     wizardWindow?.show();
     wizardWindow?.focus();
+    wizardWindow?.focus();
+
 
     const servers = appConfig!.torr_server_urls.map((url, index) => ({
       url,
@@ -331,9 +333,9 @@ function openMagnetInputDialog(): void {
     frame: false,
     resizable: false,
     webPreferences: {
-      contextIsolation: false,
-      nodeIntegration: true,
-      webSecurity: false,
+      preload: path.join(__dirname, 'magnet-preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
       devTools: false
     }
   });
@@ -396,8 +398,9 @@ export async function createTorrentsWindow(kpTitle: string, year: string | null,
     icon: 'icon.png',
     show: false,
     webPreferences: {
-      contextIsolation: false,
-      webSecurity: false,
+      contextIsolation: true,
+      nodeIntegration: false,
+      webSecurity: true,
       devTools: false
     }
   });
