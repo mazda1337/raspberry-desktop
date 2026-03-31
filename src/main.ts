@@ -157,7 +157,7 @@ const showUpdateAvailableDialog = (): void => {
       if (result.response === 1) {
         autoUpdater.quitAndInstall();
       } else if (result.response === 2) {
-        shell.openExternal('https://github.com/reyohoho/reyohoho-desktop/releases');
+        shell.openExternal('https://github.com/mazda1337/raspberry-desktop/releases');
         showUpdateAvailableDialog();
       }
     });
@@ -1279,7 +1279,7 @@ autoUpdater.on('update-available', () => {
       buttons: ['Позже', 'Перейти'],
     }).then((result) => {
       if (result.response === 1) {
-        shell.openExternal('https://github.com/reyohoho/reyohoho-desktop/releases');
+        shell.openExternal('https://github.com/mazda1337/raspberry-desktop/releases');
       }
     });
   }
