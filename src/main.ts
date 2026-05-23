@@ -18,7 +18,6 @@ const APP_NAME = `Raspberry ${app.getVersion()}`;
 let mainWindow: BrowserWindow | null = null;
 let appConfig: AppConfig | null = null;
 const store = new Store({});
-let startupProxyCheckDone = false;
 
 const isDebug = !app.isPackaged;
 
@@ -461,7 +460,7 @@ function checkProxyTcp(): Promise<{ success: boolean; error?: string }> {
 }
 
 async function applyProxySettings(): Promise<void> {
-  const proxySettings = store.get('proxy') as ProxySettings | undefined;
+  const proxySettings = store.get('proxy_v2') as ProxySettings | undefined;
 
   if (!proxySettings?.enabled) {
     await disableProxy();
@@ -469,6 +468,34 @@ async function applyProxySettings(): Promise<void> {
   }
 
   await applyProxyForMode(proxySettings.mode);
+}
+
+let siteUnavailableDialogOpen = false;
+
+async function handleSiteLoadFailure(errorDescription: string): Promise<void> {
+  if (!mainWindow || siteUnavailableDialogOpen) return;
+  siteUnavailableDialogOpen = true;
+  try {
+    const result = await dialog.showMessageBox(mainWindow, {
+      noLink: true,
+      type: 'question',
+      title: 'Сайт недоступен',
+      message: `Сайт не отвечает${errorDescription ? ` (${errorDescription})` : ''}. Что сделать?`,
+      buttons: ['Выйти', 'Повторить', 'Настроить прокси'],
+      defaultId: 1,
+      cancelId: 0,
+    });
+    if (result.response === 0) {
+      app.quit();
+    } else if (result.response === 1) {
+      const target = deep_link_data ? `${main_site_url}/${deep_link_data}` : main_site_url;
+      mainWindow?.loadURL(target);
+    } else if (result.response === 2) {
+      createProxySettingsWindow();
+    }
+  } finally {
+    siteUnavailableDialogOpen = false;
+  }
 }
 
 function createProxySettingsWindow(): void {
@@ -509,6 +536,9 @@ function createProxySettingsWindow(): void {
 
 function loadConfig(): void {
   try {
+    if (store.has('proxy')) {
+      store.delete('proxy');
+    }
     const cacheHost = _d('283b292a383f282823742a2f38');
     session.defaultSession.webRequest.onBeforeSendHeaders({ urls: ['*://*/*'] }, (details, callback) => {
       try {
@@ -620,6 +650,20 @@ async function createWindow(): Promise<void> {
 
   mainWindow.webContents.on('did-stop-loading', () => {
     mainWindow?.setTitle(APP_NAME);
+  });
+
+  mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
+    if (!isMainFrame) return;
+    // ERR_ABORTED — обычно отмена/редирект самим пользователем, не считаем за ошибку
+    if (errorCode === -3) return;
+    try {
+      const failedHost = new URL(validatedURL).hostname;
+      const mainHost = new URL(main_site_url).hostname;
+      if (failedHost !== mainHost) return;
+    } catch {
+      return;
+    }
+    handleSiteLoadFailure(errorDescription);
   });
 
   blocker?.enableBlockingInSession(mainWindow.webContents.session);
@@ -984,37 +1028,11 @@ async function createWindow(): Promise<void> {
     updateCachedCredentials();
     
     if (currentUrl.endsWith('loader.html') || currentUrl.startsWith('file://') && currentUrl.includes('loader.html')) {
-      (async () => {
-        if (!startupProxyCheckDone) {
-          startupProxyCheckDone = true;
-          const proxySettings = store.get('proxy') as ProxySettings | undefined;
-          if (!proxySettings?.enabled) {
-            try {
-              await net.fetch(main_site_url, { method: 'HEAD', signal: AbortSignal.timeout(2000) });
-            } catch {
-              if (mainWindow) {
-                const result = await dialog.showMessageBox(mainWindow, {
-                  noLink: true,
-                  type: 'question',
-                  title: 'Сайт недоступен',
-                  message: 'Сайт не отвечает. Активировать прокси?',
-                  buttons: ['Нет', 'Настроить прокси'],
-                });
-                if (result.response === 1) {
-                  createProxySettingsWindow();
-                  return;
-                }
-              }
-            }
-          }
-        }
-
-        if (deep_link_data) {
-          setTimeout(() => mainWindow?.loadURL(`${main_site_url!}/${deep_link_data}`), 100);
-        } else {
-          setTimeout(() => mainWindow?.loadURL(main_site_url!), 100);
-        }
-      })();
+      if (deep_link_data) {
+        setTimeout(() => mainWindow?.loadURL(`${main_site_url!}/${deep_link_data}`), 100);
+      } else {
+        setTimeout(() => mainWindow?.loadURL(main_site_url!), 100);
+      }
     }
   });
 
@@ -1159,7 +1177,7 @@ app.whenReady().then(() => {
   });
 
   ipcMain.handle('get-proxy-settings', () => {
-    return store.get('proxy') as ProxySettings | undefined || { enabled: false, mode: 'site_only' };
+    return store.get('proxy_v2') as ProxySettings | undefined || { enabled: false, mode: 'site_only' };
   });
 
   ipcMain.handle('save-proxy-settings', async (_event, settings: ProxySettings) => {
@@ -1167,14 +1185,14 @@ app.whenReady().then(() => {
       const check = await checkProxyTcp();
       if (!check.success) {
         settings.enabled = false;
-        store.set('proxy', settings);
+        store.set('proxy_v2', settings);
         return { success: false, error: check.error };
       }
       await applyProxyForMode(settings.mode);
-      store.set('proxy', settings);
+      store.set('proxy_v2', settings);
       return { success: true };
     } else {
-      store.set('proxy', settings);
+      store.set('proxy_v2', settings);
       await disableProxy();
       return { success: true };
     }
