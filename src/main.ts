@@ -7,7 +7,6 @@ import path from "node:path";
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
 import fs from 'fs';
-import { createConnection as createTcpConnection } from 'node:net';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -18,7 +17,6 @@ const APP_NAME = `Raspberry ${app.getVersion()}`;
 let mainWindow: BrowserWindow | null = null;
 let appConfig: AppConfig | null = null;
 const store = new Store({});
-let startupProxyCheckDone = false;
 
 const isDebug = !app.isPackaged;
 
@@ -32,7 +30,6 @@ if (process.platform === 'darwin') {
 const _k = 0x5A;
 const _d = (h: string) => { const r: number[] = []; for (let i = 0; i < h.length; i += 2) r.push(parseInt(h.substring(i, i + 2), 16) ^ _k); return Buffer.from(r).toString(); };
 let main_site_url = _d('322e2e2a29607575283b292a383f282823742a2f38');
-const proxy_url = _d('322e2e2a6075752f293f286b602a3b29292d35283e6b1a6e6f746b6963746d6d746b6f6f60696b6862');
 let deep_link_data: String | null;
 
 let cachedBase64Credentials: string | null = null;
@@ -51,7 +48,6 @@ async function fetchRemoteConfig(): Promise<void> {
       if (appConfig?.main_site_url) {
         main_site_url = appConfig.main_site_url;
       }
-      await applyProxySettings();
       console.log('Remote config loaded successfully');
     } else {
       console.error('Failed to fetch remote config:', response.status);
@@ -362,151 +358,6 @@ export interface AppConfig {
   torr_server_speedtest_urls: string[],
 }
 
-interface ProxySettings {
-  enabled: boolean;
-  mode: 'site_only' | 'all';
-}
-
-let proxySettingsWindow: BrowserWindow | null = null;
-let proxyCredentials: { username: string; password: string } | null = null;
-
-function parseProxyUrl(proxyUrl: string): { cleanUrl: string; username?: string; password?: string } {
-  try {
-    const url = new URL(proxyUrl);
-    const username = url.username ? decodeURIComponent(url.username) : undefined;
-    const password = url.password ? decodeURIComponent(url.password) : undefined;
-    const cleanUrl = `${url.protocol}//${url.hostname}${url.port ? ':' + url.port : ''}`;
-    return { cleanUrl, username, password };
-  } catch {
-    return { cleanUrl: proxyUrl };
-  }
-}
-
-function applyProxyCredentials(): void {
-  const { username, password } = parseProxyUrl(proxy_url);
-  proxyCredentials = (username && password) ? { username, password } : null;
-}
-
-async function applyProxyForMode(mode: 'site_only' | 'all'): Promise<void> {
-  const { cleanUrl } = parseProxyUrl(proxy_url);
-  applyProxyCredentials();
-
-  if (mode === 'all') {
-    await session.defaultSession.setProxy({
-      proxyRules: cleanUrl,
-      proxyBypassRules: '<local>'
-    });
-  } else {
-    let proxyHost = '';
-    try {
-      const u = new URL(cleanUrl);
-      proxyHost = `${u.hostname}${u.port ? ':' + u.port : ''}`;
-    } catch {
-      proxyHost = cleanUrl.replace(/^.*:\/\//, '');
-    }
-
-    const pacDirective = `PROXY ${proxyHost}`;
-
-    let mainSiteHostname = '';
-    try {
-      mainSiteHostname = new URL(main_site_url).hostname;
-    } catch {}
-    const targetHost = mainSiteHostname;
-
-    const pacScript = `
-      function FindProxyForURL(url, host) {
-        if (dnsDomainIs(host, "${targetHost}") || host === "${targetHost}") {
-          return "${pacDirective}";
-        }
-        return "DIRECT";
-      }
-    `;
-
-    const pacDataUrl = `data:application/x-ns-proxy-autoconfig;base64,${Buffer.from(pacScript).toString('base64')}`;
-    await session.defaultSession.setProxy({ pacScript: pacDataUrl });
-  }
-}
-
-async function disableProxy(): Promise<void> {
-  proxyCredentials = null;
-  await session.defaultSession.setProxy({ mode: 'direct' });
-}
-
-function checkProxyTcp(): Promise<{ success: boolean; error?: string }> {
-  return new Promise((resolve) => {
-    try {
-      const { cleanUrl } = parseProxyUrl(proxy_url);
-      const u = new URL(cleanUrl);
-      const host = u.hostname;
-      const port = parseInt(u.port) || 3128;
-
-      const socket = createTcpConnection({ host, port }, () => {
-        socket.destroy();
-        resolve({ success: true });
-      });
-
-      socket.setTimeout(7000);
-      socket.on('timeout', () => {
-        socket.destroy();
-        resolve({ success: false, error: 'Таймаут подключения к прокси-серверу' });
-      });
-      socket.on('error', (err: any) => {
-        socket.destroy();
-        resolve({ success: false, error: err?.message || 'Прокси-сервер недоступен' });
-      });
-    } catch (error: any) {
-      resolve({ success: false, error: error?.message || 'Ошибка проверки прокси' });
-    }
-  });
-}
-
-async function applyProxySettings(): Promise<void> {
-  const proxySettings = store.get('proxy') as ProxySettings | undefined;
-
-  if (!proxySettings?.enabled) {
-    await disableProxy();
-    return;
-  }
-
-  await applyProxyForMode(proxySettings.mode);
-}
-
-function createProxySettingsWindow(): void {
-  if (proxySettingsWindow) {
-    proxySettingsWindow.focus();
-    return;
-  }
-
-  proxySettingsWindow = new BrowserWindow({
-    width: 420,
-    height: 320,
-    resizable: false,
-    minimizable: false,
-    maximizable: false,
-    darkTheme: true,
-    backgroundColor: '#1a1a1a',
-    parent: mainWindow || undefined,
-    modal: true,
-    show: false,
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
-      contextIsolation: true,
-      nodeIntegration: false,
-    }
-  });
-
-  proxySettingsWindow.setMenu(null);
-  proxySettingsWindow.loadFile('proxy-settings.html');
-
-  proxySettingsWindow.once('ready-to-show', () => {
-    proxySettingsWindow?.show();
-  });
-
-  proxySettingsWindow.on('closed', () => {
-    proxySettingsWindow = null;
-  });
-}
-
 function loadConfig(): void {
   try {
     const cacheHost = _d('283b292a383f282823742a2f38');
@@ -529,7 +380,6 @@ function loadConfig(): void {
 
     (async () => {
       await session.defaultSession.clearCache();
-      await applyProxySettings();
       createWindow();
     })();
   } catch (error) {
@@ -768,15 +618,6 @@ async function createWindow(): Promise<void> {
                 background: #666;
                 color: #fff;
               }
-              #reyohoho-top-menu .menu-btn.proxy-on {
-                background: rgba(220, 50, 50, 0.15);
-                border-color: #c0392b;
-                color: #e74c3c;
-              }
-              #reyohoho-top-menu .menu-btn.proxy-on:hover {
-                background: rgba(220, 50, 50, 0.25);
-                color: #ff6b6b;
-              }
               #reyohoho-top-menu .menu-divider {
                 width: 1px;
                 height: 28px;
@@ -875,9 +716,6 @@ async function createWindow(): Promise<void> {
                 <i class="fas fa-forward"></i> <span class="btn-text">+0.25x</span> <span class="hotkey">F8</span>
               </button>
               <div class="menu-divider"></div>
-              <button id="proxy-btn" class="menu-btn" onclick="window.electronAPI.openProxySettings()">
-                <i class="fas fa-shield-halved"></i> <span class="btn-text">Турбо</span>
-              </button>
               <button class="menu-btn" onclick="window.electronAPI.sendHotKey('F10')">
                 <i class="fas fa-eye"></i> <span class="btn-text">Скрыть меню</span> <span class="hotkey">F10</span>
               </button>
@@ -911,17 +749,6 @@ async function createWindow(): Promise<void> {
             childList: true,
             subtree: true
           });
-          
-          window.electronAPI.getProxySettings().then(settings => {
-            const proxyBtn = document.getElementById('proxy-btn');
-            if (proxyBtn) {
-              if (settings && settings.enabled) {
-                proxyBtn.classList.add('proxy-on');
-              } else {
-                proxyBtn.classList.remove('proxy-on');
-              }
-            }
-          }).catch(() => {});
           
           function updateButtonStates() {
             try {
@@ -984,37 +811,11 @@ async function createWindow(): Promise<void> {
     updateCachedCredentials();
     
     if (currentUrl.endsWith('loader.html') || currentUrl.startsWith('file://') && currentUrl.includes('loader.html')) {
-      (async () => {
-        if (!startupProxyCheckDone) {
-          startupProxyCheckDone = true;
-          const proxySettings = store.get('proxy') as ProxySettings | undefined;
-          if (!proxySettings?.enabled) {
-            try {
-              await net.fetch(main_site_url, { method: 'HEAD', signal: AbortSignal.timeout(2000) });
-            } catch {
-              if (mainWindow) {
-                const result = await dialog.showMessageBox(mainWindow, {
-                  noLink: true,
-                  type: 'question',
-                  title: 'Сайт недоступен',
-                  message: 'Сайт не отвечает. Активировать прокси?',
-                  buttons: ['Нет', 'Настроить прокси'],
-                });
-                if (result.response === 1) {
-                  createProxySettingsWindow();
-                  return;
-                }
-              }
-            }
-          }
-        }
-
-        if (deep_link_data) {
-          setTimeout(() => mainWindow?.loadURL(`${main_site_url!}/${deep_link_data}`), 100);
-        } else {
-          setTimeout(() => mainWindow?.loadURL(main_site_url!), 100);
-        }
-      })();
+      if (deep_link_data) {
+        setTimeout(() => mainWindow?.loadURL(`${main_site_url!}/${deep_link_data}`), 100);
+      } else {
+        setTimeout(() => mainWindow?.loadURL(main_site_url!), 100);
+      }
     }
   });
 
@@ -1111,13 +912,6 @@ async function createWindow(): Promise<void> {
 
 }
 
-app.on('login', (event, _webContents, _details, authInfo, callback) => {
-  if (authInfo.isProxy && proxyCredentials) {
-    event.preventDefault();
-    callback(proxyCredentials.username, proxyCredentials.password);
-  }
-});
-
 app.whenReady().then(() => {
   app.setAsDefaultProtocolClient('reyohoho');
 
@@ -1156,46 +950,6 @@ app.whenReady().then(() => {
 
   ipcMain.handle('open-external', (event, url) => {
     shell.openExternal(url);
-  });
-
-  ipcMain.handle('get-proxy-settings', () => {
-    return store.get('proxy') as ProxySettings | undefined || { enabled: false, mode: 'site_only' };
-  });
-
-  ipcMain.handle('save-proxy-settings', async (_event, settings: ProxySettings) => {
-    if (settings.enabled) {
-      const check = await checkProxyTcp();
-      if (!check.success) {
-        settings.enabled = false;
-        store.set('proxy', settings);
-        return { success: false, error: check.error };
-      }
-      await applyProxyForMode(settings.mode);
-      store.set('proxy', settings);
-      return { success: true };
-    } else {
-      store.set('proxy', settings);
-      await disableProxy();
-      return { success: true };
-    }
-  });
-
-  ipcMain.on('close-proxy-window', () => {
-    if (proxySettingsWindow) {
-      proxySettingsWindow.close();
-      proxySettingsWindow = null;
-    }
-    setTimeout(() => {
-      if (deep_link_data) {
-        mainWindow?.loadURL(`${main_site_url!}/${deep_link_data}`);
-      } else {
-        mainWindow?.loadURL(main_site_url!);
-      }
-    }, 300);
-  });
-
-  ipcMain.on('open-proxy-settings', () => {
-    createProxySettingsWindow();
   });
 
   loadConfig();

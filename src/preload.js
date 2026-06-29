@@ -25,9 +25,5 @@ contextBridge.exposeInMainWorld("electronAPI", {
     }, 500);
   },
   openParserSelection: () => ipcRenderer.send("open-parser-selection"),
-  getProxySettings: () => ipcRenderer.invoke("get-proxy-settings"),
-  saveProxySettings: (settings) => ipcRenderer.invoke("save-proxy-settings", settings),
-  closeProxyWindow: () => ipcRenderer.send("close-proxy-window"),
-  openProxySettings: () => ipcRenderer.send("open-proxy-settings"),
   executeInIframe: (script) => ipcRenderer.invoke("execute-in-iframe", script),
 });

@@ -1,6 +1,6 @@
 {
   "name": "ReYohoho",
-  "version": "2.0.12",
+  "version": "2.0.13",
   "main": "dist/main.js",
   "author": "ReYohoho",
   "type": "module",
@@ -43,7 +43,6 @@
       "loader.html",
       "torrent-wizard.html",
       "magnet-input.html",
-      "proxy-settings.html",
       "prebuilts/adblock.txt",
       "icons/256x256.png"
     ],
