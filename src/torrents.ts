@@ -1,11 +1,18 @@
 import fetch from 'cross-fetch';
-import { app, BrowserWindow, dialog, shell, screen, Menu, globalShortcut, clipboard, Rectangle, ipcMain } from 'electron';
+import { app, BrowserWindow, dialog, shell, Menu, globalShortcut, clipboard, ipcMain } from 'electron';
 import { spawn, ChildProcess } from 'child_process';
 import fs from 'fs';
-import Store from 'electron-store';
 import { AppConfig } from './main.js'
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
+import { appStore as store } from './app-store.js';
+import {
+  centerBoundsOnDisplay,
+  getDisplayForWindow,
+  loadWindowState,
+  showWindowWithState,
+  trackWindowState,
+} from './window-state.js';
 
 
 const __filename = fileURLToPath(import.meta.url);
@@ -18,11 +25,16 @@ let mainWindow: BrowserWindow | null = null;
 let wizardWindow: BrowserWindow | null = null;
 let magnetInputWindow: BrowserWindow | null = null;
 let appConfig: AppConfig | null = null;
-const store = new Store({});
 let userToken: string | null = null;
 let selectedTorrServerUrl: string | null = null;
 let currentMagnetUrl: string | null = null;
 let currentTorrentHash: string | null = null;
+let torrentsSearch: { kpTitle: string; year: string | null; altname: string | null } = {
+  kpTitle: '',
+  year: null,
+  altname: null,
+};
+let torrentsButtonsReady = false;
 
 const videoExtensions = [".webm", ".mkv", ".flv", ".vob", ".ogv", ".ogg", ".rrc", ".gifv",
   ".mng", ".mov", ".avi", ".qt", ".wmv", ".yuv", ".rm", ".asf", ".amv", ".mp4", ".m4p", ".m4v",
@@ -232,9 +244,23 @@ function createWizardWindow(magnetUrl: string): void {
     return;
   }
 
+  // Prefer parent (torrents) display; fall back to last saved wizard/main state
+  const parentDisplay = getDisplayForWindow(mainWindow);
+  const windowState = loadWindowState(store, 'wizardWindowState', 'bounds');
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    windowState.displayId = parentDisplay.id;
+    windowState.x = parentDisplay.workArea.x;
+    windowState.y = parentDisplay.workArea.y;
+    windowState.width = parentDisplay.workArea.width;
+    windowState.height = parentDisplay.workArea.height;
+    windowState.isMaximized = true;
+  }
+
   wizardWindow = new BrowserWindow({
-    width: screen.getPrimaryDisplay().workAreaSize.width,
-    height: screen.getPrimaryDisplay().workAreaSize.height,
+    x: windowState.x,
+    y: windowState.y,
+    width: windowState.width,
+    height: windowState.height,
     darkTheme: true,
     backgroundColor: "#1e1e2e",
     icon: 'icon.png',
@@ -250,6 +276,8 @@ function createWizardWindow(magnetUrl: string): void {
     }
   });
 
+  trackWindowState(wizardWindow, store, 'wizardWindowState');
+
   if (process.platform === 'darwin') {
     Menu.setApplicationMenu(createMenu());
   } else {
@@ -258,9 +286,8 @@ function createWizardWindow(magnetUrl: string): void {
   wizardWindow.loadFile("torrent-wizard.html");
 
   wizardWindow.once('ready-to-show', () => {
-    wizardWindow?.maximize();
-    wizardWindow?.show();
-    wizardWindow?.focus();
+    if (!wizardWindow) return;
+    showWindowWithState(wizardWindow, windowState);
 
     const servers = appConfig!.torr_server_urls.map((url, index) => ({
       url,
@@ -269,7 +296,7 @@ function createWizardWindow(magnetUrl: string): void {
       id: (appConfig as any).torr_server_ids?.[index] || `server${index}`
     }));
 
-    wizardWindow?.webContents.send('init-wizard', {
+    wizardWindow.webContents.send('init-wizard', {
       magnetUrl,
       servers,
       appVersion: app.getVersion(),
@@ -319,9 +346,13 @@ function openMagnetInputDialog(): void {
     return;
   }
 
+  const magnetBounds = centerBoundsOnDisplay(getDisplayForWindow(mainWindow), 500, 250);
+
   magnetInputWindow = new BrowserWindow({
-    width: 500,
-    height: 250,
+    x: magnetBounds.x,
+    y: magnetBounds.y,
+    width: magnetBounds.width,
+    height: magnetBounds.height,
     darkTheme: true,
     backgroundColor: "#1e1e2e",
     icon: 'icon.png',
@@ -342,8 +373,10 @@ function openMagnetInputDialog(): void {
   magnetInputWindow.loadFile("magnet-input.html");
 
   magnetInputWindow.once('ready-to-show', () => {
-    magnetInputWindow?.show();
-    magnetInputWindow?.focus();
+    if (!magnetInputWindow) return;
+    magnetInputWindow.setBounds(magnetBounds);
+    magnetInputWindow.show();
+    magnetInputWindow.focus();
   });
 
   magnetInputWindow.on('closed', () => {
@@ -388,9 +421,29 @@ export async function createTorrentsWindow(kpTitle: string, year: string | null,
   
   initDefaultPlayerForPlatform();
 
+  // Dedicated key only — do not fall back to main window 'bounds'
+  const windowState = loadWindowState(store, 'torrentsWindowState');
+  const parserUrl = `${getCurrentTorrentParserUrl()}/index3.html?rand=${Date.now()}`;
+  torrentsSearch = { kpTitle, year, altname };
+
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    showWindowWithState(mainWindow, windowState);
+    mainWindow.setTitle(APP_NAME + ' Loading ....');
+    if (process.platform === 'darwin') {
+      Menu.setApplicationMenu(createMenu());
+    } else {
+      mainWindow.setMenu(createMenu());
+    }
+    mainWindow.loadURL(parserUrl);
+    mainWindow.focus();
+    return;
+  }
+
   mainWindow = new BrowserWindow({
-    width: screen.getPrimaryDisplay().workAreaSize.width,
-    height: screen.getPrimaryDisplay().workAreaSize.height,
+    x: windowState.x,
+    y: windowState.y,
+    width: windowState.width,
+    height: windowState.height,
     darkTheme: true,
     backgroundColor: "#000",
     icon: 'icon.png',
@@ -402,15 +455,14 @@ export async function createTorrentsWindow(kpTitle: string, year: string | null,
     }
   });
 
-  mainWindow.setBounds(store.get('bounds') as Rectangle)
+  trackWindowState(mainWindow, store, 'torrentsWindowState');
 
   mainWindow.once('ready-to-show', () => {
-    mainWindow?.maximize();
-    mainWindow?.show();
-    mainWindow?.focus();
+    if (!mainWindow) return;
+    showWindowWithState(mainWindow, windowState);
   });
 
-  mainWindow?.loadFile("loader.html");
+  mainWindow.loadFile("loader.html");
 
   mainWindow.setTitle(APP_NAME + ' Loading ....');
 
@@ -430,7 +482,7 @@ export async function createTorrentsWindow(kpTitle: string, year: string | null,
     mainWindow.setMenu(createMenu());
   }
 
-  mainWindow?.loadURL(`${getCurrentTorrentParserUrl()}/index3.html?rand=${Date.now()}`);
+  mainWindow.loadURL(parserUrl);
 
   mainWindow.webContents.on('did-fail-load', (event, errorCode, errorDescription, validatedURL) => {
     if (validatedURL.includes('index3.html')) {
@@ -470,8 +522,9 @@ export async function createTorrentsWindow(kpTitle: string, year: string | null,
   });
 
   mainWindow.on('closed', function () {
-    mainWindow = null
-  })
+    mainWindow = null;
+    torrentsButtonsReady = false;
+  });
 
   mainWindow.on('focus', function () {
     if (process.platform === 'darwin') {
@@ -1071,16 +1124,20 @@ async function fetchWithRetryWizard(
 }
 
 function setupButtons(kpTitle: string, year: string | null, altname: string | null): void {
-  mainWindow?.webContents.on('will-navigate', (event, url) => {
+  torrentsSearch = { kpTitle, year, altname };
+  if (torrentsButtonsReady || !mainWindow || mainWindow.isDestroyed()) return;
+  torrentsButtonsReady = true;
+
+  mainWindow.webContents.on('will-navigate', (event, url) => {
     if (url.startsWith('magnet:')) {
       event.preventDefault();
-
       openMagnet(url);
     }
   });
 
-  mainWindow?.webContents.on('did-finish-load', () => {
-    mainWindow?.webContents.insertCSS(`
+  mainWindow.webContents.on('did-finish-load', () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    mainWindow.webContents.insertCSS(`
       ::-webkit-scrollbar {
         width: 5px;
       }
@@ -1096,19 +1153,20 @@ function setupButtons(kpTitle: string, year: string | null, altname: string | nu
       }
     `);
 
+    const { kpTitle: title, year: y, altname: alt } = torrentsSearch;
     const searchTorrents = `
-      document.getElementById('s').value = "${kpTitle}";
-      document.getElementById('altname').value = "${altname}";
+      document.getElementById('s').value = ${JSON.stringify(title)};
+      document.getElementById('altname').value = ${JSON.stringify(alt ?? '')};
       document.querySelector('#exactSearch').checked=true;
       window.localStorage.setItem('exact', 1);
       document.querySelector('#submitButton').click();
-      if(${year}) {
+      if(${y ? JSON.stringify(y) : 'null'}) {
               function waitYear() {
                 const selectElement = document.querySelector('select[name="year"]');
                 if (selectElement) {
-                  const option = selectElement.querySelector('option[value="${year}"]');
+                  const option = selectElement.querySelector('option[value=${JSON.stringify(String(y))}]');
                   if (option) {
-                    selectElement.value = '${year}';
+                    selectElement.value = ${JSON.stringify(String(y))};
                     const event = new Event('change', { bubbles: true });
                     selectElement.dispatchEvent(event);
                     clearInterval(intervalId);
@@ -1120,7 +1178,7 @@ function setupButtons(kpTitle: string, year: string | null, altname: string | nu
         }
     `;
 
-    mainWindow?.webContents.executeJavaScript(searchTorrents);
+    mainWindow.webContents.executeJavaScript(searchTorrents);
   });
 }
 

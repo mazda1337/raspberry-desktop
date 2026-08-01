@@ -1,6 +1,6 @@
 {
   "name": "ReYohoho",
-  "version": "2.0.20",
+  "version": "2.1.1",
   "main": "dist/main.js",
   "author": "ReYohoho",
   "type": "module",
@@ -38,6 +38,9 @@
     "files": [
       "dist/main.js",
       "dist/torrents.js",
+      "dist/window-state.js",
+      "dist/app-store.js",
+      "dist/hotkeys.js",
       "dist/preload.js",
       "package.json",
       "loader.html",

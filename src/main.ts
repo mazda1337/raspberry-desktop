@@ -1,12 +1,21 @@
 import { ElectronBlocker } from '@ghostery/adblocker-electron';
-import { app, BrowserWindow, dialog, session, globalShortcut, shell, screen, Menu, ipcMain, Rectangle, net } from 'electron';
+import { app, BrowserWindow, dialog, session, globalShortcut, shell, Menu, ipcMain, net } from 'electron';
 import { createTorrentsWindow } from './torrents.js'
-import Store from 'electron-store';
 import pkg from 'electron-updater';
 import path from "node:path";
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
 import fs from 'fs';
+import { appStore as store } from './app-store.js';
+import { loadWindowState, showWindowWithState, trackWindowState } from './window-state.js';
+import {
+  DEFAULT_HOTKEYS,
+  HOTKEY_META,
+  loadHotkeys,
+  saveHotkeys,
+  type HotkeyAction,
+  type HotkeyMap,
+} from './hotkeys.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -16,7 +25,6 @@ const APP_NAME = `Raspberry ${app.getVersion()}`;
 
 let mainWindow: BrowserWindow | null = null;
 let appConfig: AppConfig | null = null;
-const store = new Store({});
 
 const isDebug = !app.isPackaged;
 
@@ -136,7 +144,8 @@ if (process.platform === 'darwin') {
 
 const _k = 0x5A;
 const _d = (h: string) => { const r: number[] = []; for (let i = 0; i < h.length; i += 2) r.push(parseInt(h.substring(i, i + 2), 16) ^ _k); return Buffer.from(r).toString(); };
-let main_site_url = _d('322e2e2a29607575283b292a383f282823742a2f38');
+// TEMP: local Vite for testing (was: _d('322e2e2a29607575283b292a383f282823742a2f38'))
+let main_site_url = 'http://localhost:5173';
 let deep_link_data: String | null;
 
 let cachedBase64Credentials: string | null = null;
@@ -152,7 +161,8 @@ async function fetchRemoteConfig(): Promise<void> {
     });
     if (response.ok) {
       appConfig = await response.json();
-      if (appConfig?.main_site_url) {
+      // Keep localhost during local testing; do not override from remote config
+      if (appConfig?.main_site_url && !main_site_url.includes('localhost')) {
         main_site_url = appConfig.main_site_url;
       }
       console.log('Remote config loaded successfully');
@@ -495,29 +505,83 @@ function loadConfig(): void {
   }
 }
 
+function getHotkeyActionHandler(action: HotkeyAction): (() => void) | null {
+  switch (action) {
+    case 'torrents':
+      return openTorrents;
+    case 'blur':
+      return switchBlurVideo;
+    case 'compressor':
+      return switchCompressor;
+    case 'mirror':
+      return switchMirror;
+    case 'reload':
+      return reload;
+    case 'speedDown':
+      return decreasePlaybackSpeed;
+    case 'speedReset':
+      return resetPlaybackSpeed;
+    case 'speedUp':
+      return increasePlaybackSpeed;
+    case 'logout':
+      return logout;
+    case 'toggleMenu':
+      return toggleMenu;
+    default:
+      return null;
+  }
+}
+
+function syncHotkeysToRenderer(map?: HotkeyMap): void {
+  const hotkeys = map || loadHotkeys(store);
+  const json = JSON.stringify(hotkeys);
+  mainWindow?.webContents
+    .executeJavaScript(
+      `
+      (function() {
+        window.__reyoHotkeys = ${json};
+        try { localStorage.setItem('reyoHotkeys', JSON.stringify(window.__reyoHotkeys)); } catch (e) {}
+        window.dispatchEvent(new CustomEvent('reyo-hotkeys-changed', { detail: window.__reyoHotkeys }));
+        if (typeof window.__reyoUpdateHotkeyLabels === 'function') window.__reyoUpdateHotkeyLabels();
+      })();
+    `,
+    )
+    .catch(() => {});
+}
+
 function registerHotkeys(): void {
-  globalShortcut.register('F1', openTorrents);
-  globalShortcut.register('F2', switchBlurVideo);
-  globalShortcut.register('F3', switchCompressor);
-  globalShortcut.register('F4', switchMirror);
-  globalShortcut.register('F5', reload);
-  globalShortcut.register('F6', decreasePlaybackSpeed);
-  globalShortcut.register('F7', resetPlaybackSpeed);
-  globalShortcut.register('F8', increasePlaybackSpeed);
-  globalShortcut.register('F9', logout);
-  globalShortcut.register('F10', toggleMenu);
-  // globalShortcut.register('F11', () => {
-  //   mainWindow?.webContents.toggleDevTools();
-  // });
-  globalShortcut.register('CommandOrControl+F5', reloadIgnoringCache);
+  globalShortcut.unregisterAll();
+  const hotkeys = loadHotkeys(store);
+  for (const meta of HOTKEY_META) {
+    if (!meta.global) continue;
+    const accel = hotkeys[meta.action];
+    if (!accel) continue;
+    const handler = getHotkeyActionHandler(meta.action);
+    if (!handler) continue;
+    try {
+      const ok = globalShortcut.register(accel, handler);
+      if (!ok) console.warn('Hotkey already in use:', accel, meta.action);
+    } catch (e) {
+      console.warn('Failed to register hotkey', accel, meta.action, e);
+    }
+  }
+  try {
+    globalShortcut.register('CommandOrControl+F5', reloadIgnoringCache);
+  } catch {
+    /* ignore */
+  }
 }
 
 
 async function createWindow(): Promise<void> {
+  const windowState = loadWindowState(store, 'mainWindowState', 'bounds');
+
   if (!mainWindow) {
     mainWindow = new BrowserWindow({
-      width: screen.getPrimaryDisplay().workAreaSize.width,
-      height: screen.getPrimaryDisplay().workAreaSize.height,
+      x: windowState.x,
+      y: windowState.y,
+      width: windowState.width,
+      height: windowState.height,
       darkTheme: true,
       backgroundColor: "#000",
       icon: path.join(__dirname, '..', 'icons', '256x256.png'),
@@ -528,22 +592,19 @@ async function createWindow(): Promise<void> {
         devTools: false,
       }
     });
+
+    trackWindowState(mainWindow, store, 'mainWindowState');
+
+    mainWindow.once('ready-to-show', () => {
+      if (!mainWindow) return;
+      showWindowWithState(mainWindow, windowState);
+      if (isDebug) {
+        mainWindow.webContents.openDevTools();
+      }
+    });
+  } else {
+    showWindowWithState(mainWindow, windowState);
   }
-
-  mainWindow.setBounds(store.get('bounds') as Rectangle)
-
-  mainWindow.on('close', () => {
-    store.set('bounds', mainWindow!.getBounds())
-  })
-
-  mainWindow.once('ready-to-show', () => {
-    mainWindow?.maximize();
-    mainWindow?.show();
-    mainWindow?.focus();
-    if (isDebug) {
-      mainWindow?.webContents.openDevTools();
-    }
-  });
 
   if (process.platform === 'darwin') {
     setMainWindowMenu();
@@ -602,9 +663,24 @@ async function createWindow(): Promise<void> {
     // Inject top menu bar
     const currentUrl = mainWindow?.webContents.getURL() || '';
     if (!currentUrl.includes('loader.html') && !currentUrl.includes('magnet-input.html') && !currentUrl.includes('torrent-wizard.html')) {
+      const hotkeysForMenu = loadHotkeys(store);
+      const hotkeysJson = JSON.stringify(hotkeysForMenu);
+      const hotkeyMetaJson = JSON.stringify(HOTKEY_META);
       mainWindow?.webContents.executeJavaScript(`
         (function() {
           if (document.getElementById('reyohoho-top-menu')) return;
+
+          window.__reyoHotkeys = ${hotkeysJson};
+          window.__reyoHotkeyMeta = ${hotkeyMetaJson};
+          try { localStorage.setItem('reyoHotkeys', JSON.stringify(window.__reyoHotkeys)); } catch (e) {}
+
+          function fmtHotkey(accel) {
+            if (!accel) return '—';
+            return String(accel)
+              .replace(/CommandOrControl/gi, 'Ctrl')
+              .replace(/Command/gi, 'Cmd')
+              .replace(/Control/gi, 'Ctrl');
+          }
           
           const menuBar = document.createElement('div');
           menuBar.id = 'reyohoho-top-menu';
@@ -793,44 +869,203 @@ async function createWindow(): Promise<void> {
               }
             </style>
             <div class="menu-items">
-              <button class="menu-btn primary" onclick="window.electronAPI.sendHotKey('F1')">
-                <i class="fas fa-film"></i> <span class="btn-text">Полка</span> <span class="hotkey">F1</span>
+              <button class="menu-btn primary" data-action="torrents" onclick="window.electronAPI.sendHotKey('torrents')">
+                <i class="fas fa-film"></i> <span class="btn-text">Полка</span> <span class="hotkey" data-hotkey-for="torrents"></span>
               </button>
-              <button class="menu-btn" onclick="window.electronAPI.sendHotKey('F9')">
-                <i class="fas fa-right-from-bracket"></i> <span class="btn-text">Выйти</span> <span class="hotkey">F9</span>
-              </button>
-              <div class="menu-divider player-control"></div>
-              <button id="blur-btn" class="menu-btn player-control" onclick="window.electronAPI.sendHotKey('F2')">
-                <i class="fas fa-eye-slash"></i> <span class="btn-text">Блюр</span> <span class="hotkey">F2</span>
-              </button>
-              <button id="compressor-btn" class="menu-btn player-control" onclick="window.electronAPI.sendHotKey('F3')">
-                <i class="fas fa-compress"></i> <span class="btn-text">Компрессор</span> <span class="hotkey">F3</span>
-              </button>
-              <button id="mirror-btn" class="menu-btn player-control" onclick="window.electronAPI.sendHotKey('F4')">
-                <i class="fas fa-arrows-left-right"></i> <span class="btn-text">Отражение</span> <span class="hotkey">F4</span>
-              </button>
-              <div class="menu-divider"></div>
-              <button class="menu-btn" onclick="location.reload()">
-                <i class="fas fa-rotate"></i> <span class="btn-text">Обновить</span> <span class="hotkey">F5</span>
+              <button class="menu-btn" data-action="logout" onclick="window.electronAPI.sendHotKey('logout')">
+                <i class="fas fa-right-from-bracket"></i> <span class="btn-text">Выйти</span> <span class="hotkey" data-hotkey-for="logout"></span>
               </button>
               <div class="menu-divider player-control"></div>
-              <button class="menu-btn player-control" onclick="window.electronAPI.sendHotKey('F6')">
-                <i class="fas fa-backward"></i> <span class="btn-text">-0.25x</span> <span class="hotkey">F6</span>
+              <button id="blur-btn" class="menu-btn player-control" data-action="blur" onclick="window.electronAPI.sendHotKey('blur')">
+                <i class="fas fa-eye-slash"></i> <span class="btn-text">Блюр</span> <span class="hotkey" data-hotkey-for="blur"></span>
               </button>
-              <button class="menu-btn player-control" onclick="window.electronAPI.sendHotKey('F7')">
-                <i class="fas fa-play"></i> <span class="btn-text">1.0x</span> <span class="hotkey">F7</span>
+              <button id="compressor-btn" class="menu-btn player-control" data-action="compressor" onclick="window.electronAPI.sendHotKey('compressor')">
+                <i class="fas fa-compress"></i> <span class="btn-text">Компрессор</span> <span class="hotkey" data-hotkey-for="compressor"></span>
               </button>
-              <button class="menu-btn player-control" onclick="window.electronAPI.sendHotKey('F8')">
-                <i class="fas fa-forward"></i> <span class="btn-text">+0.25x</span> <span class="hotkey">F8</span>
+              <button id="mirror-btn" class="menu-btn player-control" data-action="mirror" onclick="window.electronAPI.sendHotKey('mirror')">
+                <i class="fas fa-arrows-left-right"></i> <span class="btn-text">Отражение</span> <span class="hotkey" data-hotkey-for="mirror"></span>
               </button>
               <div class="menu-divider"></div>
-              <button class="menu-btn" onclick="window.electronAPI.sendHotKey('F10')">
-                <i class="fas fa-eye"></i> <span class="btn-text">Скрыть меню</span> <span class="hotkey">F10</span>
+              <button class="menu-btn" data-action="reload" onclick="location.reload()">
+                <i class="fas fa-rotate"></i> <span class="btn-text">Обновить</span> <span class="hotkey" data-hotkey-for="reload"></span>
+              </button>
+              <div class="menu-divider player-control"></div>
+              <button class="menu-btn player-control" data-action="speedDown" onclick="window.electronAPI.sendHotKey('speedDown')">
+                <i class="fas fa-backward"></i> <span class="btn-text">-0.25x</span> <span class="hotkey" data-hotkey-for="speedDown"></span>
+              </button>
+              <button class="menu-btn player-control" data-action="speedReset" onclick="window.electronAPI.sendHotKey('speedReset')">
+                <i class="fas fa-play"></i> <span class="btn-text">1.0x</span> <span class="hotkey" data-hotkey-for="speedReset"></span>
+              </button>
+              <button class="menu-btn player-control" data-action="speedUp" onclick="window.electronAPI.sendHotKey('speedUp')">
+                <i class="fas fa-forward"></i> <span class="btn-text">+0.25x</span> <span class="hotkey" data-hotkey-for="speedUp"></span>
+              </button>
+              <div class="menu-divider"></div>
+              <button class="menu-btn" data-action="toggleMenu" onclick="window.electronAPI.sendHotKey('toggleMenu')">
+                <i class="fas fa-eye"></i> <span class="btn-text">Скрыть меню</span> <span class="hotkey" data-hotkey-for="toggleMenu"></span>
+              </button>
+              <div class="menu-divider"></div>
+              <button class="menu-btn" id="hotkeys-settings-btn" title="Горячие клавиши">
+                <i class="fas fa-keyboard"></i> <span class="btn-text">Клавиши</span>
               </button>
             </div>
           \`;
           
           document.body.insertBefore(menuBar, document.body.firstChild);
+
+          window.__reyoUpdateHotkeyLabels = function() {
+            const map = window.__reyoHotkeys || {};
+            document.querySelectorAll('[data-hotkey-for]').forEach(function(el) {
+              const action = el.getAttribute('data-hotkey-for');
+              el.textContent = fmtHotkey(map[action] || '');
+            });
+          };
+          window.__reyoUpdateHotkeyLabels();
+
+          // Hotkeys settings modal
+          if (!document.getElementById('reyo-hotkeys-modal')) {
+            const modal = document.createElement('div');
+            modal.id = 'reyo-hotkeys-modal';
+            modal.innerHTML = \`
+              <style>
+                #reyo-hotkeys-modal { display:none; position:fixed; inset:0; z-index:2147483647; background:rgba(0,0,0,0.65); align-items:center; justify-content:center; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif; }
+                #reyo-hotkeys-modal.open { display:flex; }
+                #reyo-hotkeys-modal .hk-card { width:min(560px,92vw); max-height:80vh; overflow:auto; background:#121212; border:1px solid #2a2a2a; border-radius:12px; box-shadow:0 12px 40px rgba(0,0,0,0.55); color:#e8e8e8; }
+                #reyo-hotkeys-modal .hk-head { display:flex; align-items:center; justify-content:space-between; padding:14px 16px; border-bottom:1px solid #242424; position:sticky; top:0; background:#121212; }
+                #reyo-hotkeys-modal .hk-head h3 { margin:0; font-size:16px; font-weight:650; }
+                #reyo-hotkeys-modal .hk-close { background:#1a1a1a; border:1px solid #333; color:#ccc; border-radius:6px; padding:6px 10px; cursor:pointer; }
+                #reyo-hotkeys-modal .hk-body { padding:12px 16px 16px; }
+                #reyo-hotkeys-modal .hk-group { font-size:12px; text-transform:uppercase; letter-spacing:0.04em; color:#888; margin:14px 0 8px; }
+                #reyo-hotkeys-modal .hk-row { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:8px 0; border-bottom:1px solid #1e1e1e; }
+                #reyo-hotkeys-modal .hk-label { font-size:13px; color:#ddd; }
+                #reyo-hotkeys-modal .hk-bind { min-width:110px; text-align:center; background:#1a1a1a; border:1px solid #333; color:#fff; border-radius:6px; padding:7px 10px; cursor:pointer; font-size:12px; font-weight:600; }
+                #reyo-hotkeys-modal .hk-bind.listening { border-color:#ff6b35; color:#ff6b35; box-shadow:0 0 0 1px rgba(255,107,53,0.35); }
+                #reyo-hotkeys-modal .hk-actions { display:flex; gap:8px; margin-top:14px; }
+                #reyo-hotkeys-modal .hk-actions button { flex:1; background:#1a1a1a; border:1px solid #333; color:#ddd; border-radius:6px; padding:9px 12px; cursor:pointer; font-size:13px; }
+                #reyo-hotkeys-modal .hk-actions button.primary { background:#fff; color:#000; border-color:#fff; font-weight:600; }
+                #reyo-hotkeys-modal .hk-hint { font-size:12px; color:#888; margin-top:10px; line-height:1.4; }
+              </style>
+              <div class="hk-card">
+                <div class="hk-head">
+                  <h3>Горячие клавиши</h3>
+                  <button class="hk-close" type="button">Закрыть</button>
+                </div>
+                <div class="hk-body">
+                  <div id="reyo-hotkeys-list"></div>
+                  <div class="hk-actions">
+                    <button type="button" id="reyo-hotkeys-reset">Сбросить</button>
+                    <button type="button" class="primary" id="reyo-hotkeys-done">Готово</button>
+                  </div>
+                  <div class="hk-hint">Нажмите на сочетание, затем новую клавишу. Backspace — очистить, Esc — отмена. Конфликт снимается с другой команды автоматически.</div>
+                </div>
+              </div>
+            \`;
+            document.body.appendChild(modal);
+
+            let listeningAction = null;
+            const listEl = modal.querySelector('#reyo-hotkeys-list');
+
+            function accelFromEvent(e) {
+              const key = e.key;
+              if (!key || key === 'Dead') return null;
+              if (['Control','Alt','Shift','Meta','OS'].includes(key)) return null;
+              if (key === 'Escape') return null;
+              const parts = [];
+              if (e.ctrlKey || e.metaKey) parts.push('CommandOrControl');
+              if (e.altKey) parts.push('Alt');
+              if (e.shiftKey) parts.push('Shift');
+              let main = key;
+              if (/^f\\d{1,2}$/i.test(key)) main = key.toUpperCase();
+              else if (key === ' ') main = 'Space';
+              else if (key === 'ArrowUp') main = 'Up';
+              else if (key === 'ArrowDown') main = 'Down';
+              else if (key === 'ArrowLeft') main = 'Left';
+              else if (key === 'ArrowRight') main = 'Right';
+              else if (key === '+') main = 'Plus';
+              else if (key.length === 1) main = key.toUpperCase();
+              parts.push(main);
+              return parts.join('+');
+            }
+
+            function renderHotkeyList() {
+              const map = window.__reyoHotkeys || {};
+              const meta = window.__reyoHotkeyMeta || [];
+              let html = '';
+              let lastGroup = '';
+              meta.forEach(function(item) {
+                if (item.group !== lastGroup) {
+                  lastGroup = item.group;
+                  html += '<div class="hk-group">' + (item.group === 'menu' ? 'Верхняя панель' : 'Кнопки под плеером') + '</div>';
+                }
+                html += '<div class="hk-row"><div class="hk-label">' + item.label + '</div>' +
+                  '<button type="button" class="hk-bind" data-action="' + item.action + '">' + fmtHotkey(map[item.action] || '') + '</button></div>';
+              });
+              listEl.innerHTML = html;
+              listEl.querySelectorAll('.hk-bind').forEach(function(btn) {
+                btn.addEventListener('click', function() {
+                  listEl.querySelectorAll('.hk-bind').forEach(function(b) { b.classList.remove('listening'); b.textContent = fmtHotkey((window.__reyoHotkeys || {})[b.getAttribute('data-action')] || ''); });
+                  listeningAction = btn.getAttribute('data-action');
+                  btn.classList.add('listening');
+                  btn.textContent = 'Нажмите клавишу…';
+                });
+              });
+            }
+
+            function closeModal() {
+              listeningAction = null;
+              modal.classList.remove('open');
+            }
+
+            modal.querySelector('.hk-close').addEventListener('click', closeModal);
+            modal.querySelector('#reyo-hotkeys-done').addEventListener('click', closeModal);
+            modal.addEventListener('click', function(e) { if (e.target === modal) closeModal(); });
+            modal.querySelector('#reyo-hotkeys-reset').addEventListener('click', function() {
+              if (!window.electronAPI?.resetHotkeys) return;
+              window.electronAPI.resetHotkeys().then(function(map) {
+                window.__reyoHotkeys = map;
+                try { localStorage.setItem('reyoHotkeys', JSON.stringify(map)); } catch (e) {}
+                window.__reyoUpdateHotkeyLabels();
+                renderHotkeyList();
+                window.dispatchEvent(new CustomEvent('reyo-hotkeys-changed', { detail: map }));
+                if (window.electronAPI.showToast) window.electronAPI.showToast('Клавиши сброшены');
+              });
+            });
+
+            document.addEventListener('keydown', function(e) {
+              if (!modal.classList.contains('open') || !listeningAction) return;
+              e.preventDefault();
+              e.stopPropagation();
+              if (e.key === 'Escape') {
+                listeningAction = null;
+                renderHotkeyList();
+                return;
+              }
+              const action = listeningAction;
+              let accel = '';
+              if (e.key === 'Backspace' || e.key === 'Delete') {
+                accel = '';
+              } else {
+                accel = accelFromEvent(e);
+                if (!accel) return;
+              }
+              listeningAction = null;
+              if (!window.electronAPI?.setHotkey) return;
+              window.electronAPI.setHotkey(action, accel).then(function(map) {
+                window.__reyoHotkeys = map;
+                try { localStorage.setItem('reyoHotkeys', JSON.stringify(map)); } catch (err) {}
+                window.__reyoUpdateHotkeyLabels();
+                renderHotkeyList();
+                window.dispatchEvent(new CustomEvent('reyo-hotkeys-changed', { detail: map }));
+              }).catch(function(err) {
+                console.warn(err);
+                renderHotkeyList();
+              });
+            }, true);
+
+            document.getElementById('hotkeys-settings-btn').addEventListener('click', function() {
+              renderHotkeyList();
+              modal.classList.add('open');
+            });
+          }
           
           // Check if iframe exists and toggle player controls visibility
           function updatePlayerControlsVisibility() {
@@ -936,49 +1171,60 @@ async function createWindow(): Promise<void> {
     setMainWindowMenu();
   })
 
-  ipcMain.on('on-hotkey', (event, key) => {
-    switch (key) {
-      case 'F1':
-        openTorrents();
-        return;
-
-      case 'F2':
-        switchBlurVideo();
-        return;
-
-      case 'F3':
-        switchCompressor();
-        return;
-
-      case 'F4':
-        switchMirror();
-        return;
-
-      case 'F6':
-        decreasePlaybackSpeed();
-        return;
-
-      case 'F7':
-        resetPlaybackSpeed();
-        return;
-
-      case 'F8':
-        increasePlaybackSpeed();
-        return;
-
-      case 'F9':
-        logout();
-        return;
-
-      case 'F10':
-        toggleMenu();
-        return;
-
-      default:
-        console.warn(`Unknown key: ${key}`);
-        return;
+  ipcMain.on('on-hotkey', (_event, action: HotkeyAction | string) => {
+    // Backward-compatible: old F-keys from cached pages
+    const legacy: Record<string, HotkeyAction> = {
+      F1: 'torrents',
+      F2: 'blur',
+      F3: 'compressor',
+      F4: 'mirror',
+      F5: 'reload',
+      F6: 'speedDown',
+      F7: 'speedReset',
+      F8: 'speedUp',
+      F9: 'logout',
+      F10: 'toggleMenu',
+    };
+    const resolved = (legacy[action] || action) as HotkeyAction;
+    if (resolved === 'reload') {
+      // Prefer page reload when triggered from menu button context
+      mainWindow?.webContents.executeJavaScript('location.reload()').catch(() => reload());
+      return;
     }
-  })
+    const handler = getHotkeyActionHandler(resolved);
+    if (handler) handler();
+    else console.warn(`Unknown hotkey action: ${action}`);
+  });
+
+  ipcMain.removeHandler('get-hotkeys');
+  ipcMain.handle('get-hotkeys', () => loadHotkeys(store));
+
+  ipcMain.removeHandler('set-hotkey');
+  ipcMain.handle('set-hotkey', (_event, action: HotkeyAction, accelerator: string) => {
+    if (!HOTKEY_META.some((m) => m.action === action)) {
+      throw new Error(`Unknown action: ${action}`);
+    }
+    const map = loadHotkeys(store);
+    const nextAccel = typeof accelerator === 'string' ? accelerator.trim() : '';
+    if (nextAccel) {
+      for (const key of Object.keys(map) as HotkeyAction[]) {
+        if (key !== action && map[key] === nextAccel) map[key] = '';
+      }
+    }
+    map[action] = nextAccel;
+    saveHotkeys(store, map);
+    registerHotkeys();
+    syncHotkeysToRenderer(map);
+    return map;
+  });
+
+  ipcMain.removeHandler('reset-hotkeys');
+  ipcMain.handle('reset-hotkeys', () => {
+    saveHotkeys(store, { ...DEFAULT_HOTKEYS });
+    registerHotkeys();
+    syncHotkeysToRenderer(DEFAULT_HOTKEYS);
+    return { ...DEFAULT_HOTKEYS };
+  });
 
   mainWindow.webContents.on('context-menu', (e, props) => {
     if (props.formControlType === 'input-text') {

@@ -1,7 +1,10 @@
 const { contextBridge, ipcRenderer } = require("electron/renderer");
 
 contextBridge.exposeInMainWorld("electronAPI", {
-  sendHotKey: (key) => ipcRenderer.send("on-hotkey", key),
+  sendHotKey: (action) => ipcRenderer.send("on-hotkey", action),
+  getHotkeys: () => ipcRenderer.invoke("get-hotkeys"),
+  setHotkey: (action, accelerator) => ipcRenderer.invoke("set-hotkey", action, accelerator),
+  resetHotkeys: () => ipcRenderer.invoke("reset-hotkeys"),
   showToast: (message) => {
     const messageElement = document.createElement("div");
     messageElement.textContent = message;
