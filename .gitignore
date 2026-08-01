@@ -2,3 +2,4 @@ node_modules
 dist
 prebuilts/windows/player/portable_config/cache/
 prebuilts/windows/player/portable_config/recent.json
+.cursorrules
