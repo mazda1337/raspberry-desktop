@@ -144,8 +144,7 @@ if (process.platform === 'darwin') {
 
 const _k = 0x5A;
 const _d = (h: string) => { const r: number[] = []; for (let i = 0; i < h.length; i += 2) r.push(parseInt(h.substring(i, i + 2), 16) ^ _k); return Buffer.from(r).toString(); };
-// TEMP: local Vite for testing (was: _d('322e2e2a29607575283b292a383f282823742a2f38'))
-let main_site_url = 'http://localhost:5173';
+let main_site_url = _d('322e2e2a29607575283b292a383f282823742a2f38');
 let deep_link_data: String | null;
 
 let cachedBase64Credentials: string | null = null;
