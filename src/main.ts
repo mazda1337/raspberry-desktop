@@ -20,7 +20,114 @@ const store = new Store({});
 
 const isDebug = !app.isPackaged;
 
-const adblock_path = path.join(__dirname, '../prebuilts/adblock.txt');
+const ADBLOCK_BUNDLED_PATH = path.join(__dirname, '../prebuilts/adblock.txt');
+const ADBLOCK_LIST_URL =
+  'https://easylist-downloads.adblockplus.org/ruadlist+easylist.txt';
+const ADBLOCK_PROXY_URL = `https://starege.rte.net.ru/${ADBLOCK_LIST_URL}`;
+
+let adblockBlocker: ElectronBlocker | null = null;
+let adblockUpdating = false;
+
+function getAdblockCachePath(): string {
+  return path.join(app.getPath('userData'), 'adblock', 'ruadlist_easylist.txt');
+}
+
+function readAdblockRaw(): string {
+  const cachePath = getAdblockCachePath();
+  try {
+    if (fs.existsSync(cachePath) && fs.statSync(cachePath).size > 0) {
+      return fs.readFileSync(cachePath, 'utf-8');
+    }
+  } catch (e) {
+    console.error('Failed to read adblock cache:', e);
+  }
+  return fs.readFileSync(ADBLOCK_BUNDLED_PATH, 'utf-8');
+}
+
+async function downloadAdblockList(url: string, timeoutMs: number): Promise<string | null> {
+  try {
+    const startedAt = Date.now();
+    const response = await net.fetch(url, {
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (!response.ok) {
+      console.warn(`AdBlock download failed: HTTP ${response.status}`);
+      return null;
+    }
+    const body = await response.text();
+    if (!body || body.length < 10_000 || !body.includes('[Adblock')) {
+      console.warn(`AdBlock download rejected: not a filter list (${body?.length ?? 0} bytes)`);
+      return null;
+    }
+    console.log(
+      `AdBlock downloaded ${body.length} bytes from ${url} in ${Date.now() - startedAt} ms`,
+    );
+    return body;
+  } catch (e) {
+    console.warn(`AdBlock download error from ${url}:`, e);
+    return null;
+  }
+}
+
+const ADBLOCK_UPDATE_INTERVAL_MS = 60 * 60 * 1000;
+
+function shouldUpdateAdblock(): boolean {
+  const cachePath = getAdblockCachePath();
+  try {
+    if (!fs.existsSync(cachePath)) return true;
+    const ageMs = Date.now() - fs.statSync(cachePath).mtimeMs;
+    if (ageMs < ADBLOCK_UPDATE_INTERVAL_MS) {
+      console.log(
+        `AdBlock update skipped: last update ${Math.round(ageMs / 60_000)} min ago`,
+      );
+      return false;
+    }
+  } catch {
+    return true;
+  }
+  return true;
+}
+
+async function updateAdblockInBackground(ses: Electron.Session): Promise<void> {
+  if (adblockUpdating) return;
+  if (!shouldUpdateAdblock()) return;
+  adblockUpdating = true;
+  try {
+    const raw =
+      (await downloadAdblockList(ADBLOCK_LIST_URL, 12_000)) ??
+      (await downloadAdblockList(ADBLOCK_PROXY_URL, 60_000));
+    if (!raw) {
+      console.warn('AdBlock update failed: list unavailable');
+      return;
+    }
+
+    const cachePath = getAdblockCachePath();
+    fs.mkdirSync(path.dirname(cachePath), { recursive: true });
+    const tmp = `${cachePath}.tmp`;
+    fs.writeFileSync(tmp, raw, 'utf-8');
+    try {
+      fs.renameSync(tmp, cachePath);
+    } catch {
+      fs.writeFileSync(cachePath, raw, 'utf-8');
+      try {
+        fs.unlinkSync(tmp);
+      } catch {
+      }
+    }
+
+    const newBlocker = ElectronBlocker.parse(raw);
+    if (adblockBlocker) {
+      adblockBlocker.disableBlockingInSession(ses);
+    }
+    newBlocker.enableBlockingInSession(ses);
+    adblockBlocker = newBlocker;
+    console.log('AdBlock filters updated');
+  } catch (e) {
+    console.error('AdBlock update failed:', e);
+  } finally {
+    adblockUpdating = false;
+  }
+}
 
 autoUpdater.autoInstallOnAppQuit = true;
 if (process.platform === 'darwin') {
@@ -448,10 +555,9 @@ async function createWindow(): Promise<void> {
   mainWindow.setTitle(APP_NAME + ' Loading ....');
   autoUpdater.checkForUpdatesAndNotify();
 
-  let blocker = null;
   try {
-    const adblockRaw = fs.readFileSync(adblock_path, 'utf-8');
-    blocker = ElectronBlocker.parse(adblockRaw);
+    const adblockRaw = readAdblockRaw();
+    adblockBlocker = ElectronBlocker.parse(adblockRaw);
   } catch (e) {
     console.log(e);
     if (mainWindow != null) {
@@ -472,7 +578,9 @@ async function createWindow(): Promise<void> {
     mainWindow?.setTitle(APP_NAME);
   });
 
-  blocker?.enableBlockingInSession(mainWindow.webContents.session);
+  const webSession = mainWindow.webContents.session;
+  adblockBlocker?.enableBlockingInSession(webSession);
+  void updateAdblockInBackground(webSession);
 
   mainWindow?.webContents.on('did-finish-load', () => {
     mainWindow?.webContents.insertCSS(`
