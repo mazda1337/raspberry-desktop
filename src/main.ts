@@ -319,18 +319,36 @@ const logout = (): void => {
 };
 
 const switchBlurVideo = (): void => {
-  executeInVideoFrame(`
+  // Prefer renderer toggle so manualBlurEnabled stays in sync (pause/style wipe reconcile).
+  mainWindow?.webContents.executeJavaScript(`
     (function() {
-      const video = document.querySelector('video');
-      if (!video) return null;
-      if (video.style.filter.includes('blur')) {
-        video.style.filter = '';
-      } else {
-        video.style.filter = 'blur(50px)';
+      if (typeof window.toggleBlur === 'function') {
+        window.toggleBlur();
+        return true;
       }
-      return true;
+      // Fallback if player page is not mounted yet
+      return null;
     })()
-  `).catch(() => {});
+  `).then((handled) => {
+    if (handled) return;
+    executeInVideoFrame(`
+      (function() {
+        const video = document.querySelector('video');
+        if (!video) return null;
+        const hasBlur = !!(video.style.filter && video.style.filter.includes('blur'));
+        const prev = video.style.getPropertyValue('transition');
+        const prevPri = video.style.getPropertyPriority('transition');
+        video.style.setProperty('transition', 'none', 'important');
+        video.style.setProperty('-webkit-transition', 'none', 'important');
+        video.style.filter = hasBlur ? '' : 'blur(50px)';
+        void video.offsetWidth;
+        if (prev) video.style.setProperty('transition', prev, prevPri || '');
+        else video.style.removeProperty('transition');
+        video.style.removeProperty('-webkit-transition');
+        return true;
+      })()
+    `).catch(() => {});
+  }).catch(() => {});
 };
 
 const switchCompressor = (): void => {
