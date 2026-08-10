@@ -7,7 +7,6 @@ export type HotkeyAction =
   | 'speedDown'
   | 'speedReset'
   | 'speedUp'
-  | 'logout'
   | 'toggleMenu'
   | 'theater'
   | 'dimming'
@@ -36,7 +35,6 @@ export const HOTKEY_META: HotkeyMeta[] = [
   { action: 'speedDown', label: 'Скорость −0.25x', group: 'menu', global: true },
   { action: 'speedReset', label: 'Скорость 1.0x', group: 'menu', global: true },
   { action: 'speedUp', label: 'Скорость +0.25x', group: 'menu', global: true },
-  { action: 'logout', label: 'Выйти', group: 'menu', global: true },
   { action: 'toggleMenu', label: 'Скрыть/показать меню', group: 'menu', global: true },
   { action: 'theater', label: 'Театральный режим', group: 'player', global: false },
   { action: 'dimming', label: 'Затемнение', group: 'player', global: false },
@@ -56,7 +54,6 @@ export const DEFAULT_HOTKEYS: HotkeyMap = {
   speedDown: 'F6',
   speedReset: 'F7',
   speedUp: 'F8',
-  logout: 'F9',
   toggleMenu: 'F10',
   theater: 'Alt+T',
   dimming: 'Alt+D',

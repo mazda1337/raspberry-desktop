@@ -312,9 +312,21 @@ async function openTorrents() {
 }
 
 const logout = (): void => {
-  mainWindow?.webContents.executeJavaScript(`localStorage.removeItem('siteAuth')`).then(() => {
-    cachedBase64Credentials = null;
-    mainWindow?.reload();
+  if (!mainWindow) return;
+  dialog.showMessageBox(mainWindow, {
+    noLink: true,
+    type: 'question',
+    title: 'Выйти',
+    message: 'Выйти из аккаунта?',
+    buttons: ['Отмена', 'Выйти'],
+    defaultId: 0,
+    cancelId: 0,
+  }).then((result) => {
+    if (result.response !== 1) return;
+    mainWindow?.webContents.executeJavaScript(`localStorage.removeItem('siteAuth')`).then(() => {
+      cachedBase64Credentials = null;
+      mainWindow?.reload();
+    });
   });
 };
 
@@ -540,8 +552,6 @@ function getHotkeyActionHandler(action: HotkeyAction): (() => void) | null {
       return resetPlaybackSpeed;
     case 'speedUp':
       return increasePlaybackSpeed;
-    case 'logout':
-      return logout;
     case 'toggleMenu':
       return toggleMenu;
     default:
@@ -832,6 +842,9 @@ async function createWindow(): Promise<void> {
               #reyohoho-top-menu .player-control.hidden {
                 display: none !important;
               }
+              #reyohoho-top-menu .auth-required.hidden {
+                display: none !important;
+              }
               body {
                 padding-top: 48px !important;
               }
@@ -886,11 +899,8 @@ async function createWindow(): Promise<void> {
               }
             </style>
             <div class="menu-items">
-              <button class="menu-btn primary" data-action="torrents" onclick="window.electronAPI.sendHotKey('torrents')">
+              <button class="menu-btn primary auth-required hidden" data-action="torrents" onclick="window.electronAPI.sendHotKey('torrents')">
                 <i class="fas fa-film"></i> <span class="btn-text">Полка</span> <span class="hotkey" data-hotkey-for="torrents"></span>
-              </button>
-              <button class="menu-btn" data-action="logout" onclick="window.electronAPI.sendHotKey('logout')">
-                <i class="fas fa-right-from-bracket"></i> <span class="btn-text">Выйти</span> <span class="hotkey" data-hotkey-for="logout"></span>
               </button>
               <div class="menu-divider player-control"></div>
               <button id="blur-btn" class="menu-btn player-control" data-action="blur" onclick="window.electronAPI.sendHotKey('blur')">
@@ -923,6 +933,10 @@ async function createWindow(): Promise<void> {
               <div class="menu-divider"></div>
               <button class="menu-btn" id="hotkeys-settings-btn" title="Горячие клавиши">
                 <i class="fas fa-keyboard"></i> <span class="btn-text">Клавиши</span>
+              </button>
+              <div class="menu-divider auth-required hidden"></div>
+              <button class="menu-btn auth-required hidden" data-action="logout" onclick="window.electronAPI.sendHotKey('logout')">
+                <i class="fas fa-right-from-bracket"></i> <span class="btn-text">Выйти</span>
               </button>
             </div>
           \`;
@@ -1096,9 +1110,25 @@ async function createWindow(): Promise<void> {
               }
             });
           }
+
+          function updateAuthControlsVisibility() {
+            let isLoggedIn = false;
+            try {
+              const authData = localStorage.getItem('siteAuth');
+              if (authData) {
+                const parsed = JSON.parse(authData);
+                isLoggedIn = !!(parsed && parsed.credentials);
+              }
+            } catch (e) {}
+            document.querySelectorAll('#reyohoho-top-menu .auth-required').forEach(function(el) {
+              if (isLoggedIn) el.classList.remove('hidden');
+              else el.classList.add('hidden');
+            });
+          }
           
           // Initial check
           updatePlayerControlsVisibility();
+          updateAuthControlsVisibility();
           
           // Watch for DOM changes to detect iframe
           const observer = new MutationObserver(() => {
@@ -1161,8 +1191,12 @@ async function createWindow(): Promise<void> {
           }
           
           // Update every 500ms
-          setInterval(updateButtonStates, 500);
+          setInterval(function() {
+            updateButtonStates();
+            updateAuthControlsVisibility();
+          }, 500);
           updateButtonStates();
+          updateAuthControlsVisibility();
         })();
       `);
     }
@@ -1199,9 +1233,12 @@ async function createWindow(): Promise<void> {
       F6: 'speedDown',
       F7: 'speedReset',
       F8: 'speedUp',
-      F9: 'logout',
       F10: 'toggleMenu',
     };
+    if (action === 'logout') {
+      logout();
+      return;
+    }
     const resolved = (legacy[action] || action) as HotkeyAction;
     if (resolved === 'reload') {
       // Prefer page reload when triggered from menu button context
