@@ -16,6 +16,7 @@ import {
   type HotkeyAction,
   type HotkeyMap,
 } from './hotkeys.js';
+import { credentialAutofillScript, readSavedCredentials, saveCredentialsFromBasic } from './saved-credentials.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -182,6 +183,7 @@ async function updateCachedCredentials(): Promise<void> {
       const parsed = JSON.parse(authData);
       if (parsed.credentials) {
         cachedBase64Credentials = parsed.credentials;
+        saveCredentialsFromBasic(parsed.credentials);
         if (!appConfig) {
           await fetchRemoteConfig();
         }
@@ -691,6 +693,9 @@ async function createWindow(): Promise<void> {
     // Inject top menu bar
     const currentUrl = mainWindow?.webContents.getURL() || '';
     if (!currentUrl.includes('loader.html') && !currentUrl.includes('magnet-input.html') && !currentUrl.includes('torrent-wizard.html')) {
+      mainWindow?.webContents.executeJavaScript(credentialAutofillScript()).catch((err) => {
+        console.error('Failed to inject credential autofill:', err);
+      });
       const hotkeysForMenu = loadHotkeys(store);
       const hotkeysJson = JSON.stringify(hotkeysForMenu);
       const hotkeyMetaJson = JSON.stringify(HOTKEY_META);
@@ -1358,6 +1363,17 @@ app.whenReady().then(() => {
         mainWindow.loadURL(`${main_site_url!}/${deep_link_data}`);
       }
     }
+  });
+
+  ipcMain.handle('get-saved-credentials', (event) => {
+    if (event.sender !== mainWindow?.webContents) return { login: '', password: '' };
+    return readSavedCredentials();
+  });
+
+  ipcMain.handle('save-saved-credentials', (event, basic: unknown) => {
+    if (event.sender !== mainWindow?.webContents) return;
+    if (typeof basic !== 'string') return;
+    saveCredentialsFromBasic(basic);
   });
 
   ipcMain.handle('get-app-config', () => {

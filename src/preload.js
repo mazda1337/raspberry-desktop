@@ -29,4 +29,6 @@ contextBridge.exposeInMainWorld("electronAPI", {
   },
   openParserSelection: () => ipcRenderer.send("open-parser-selection"),
   executeInIframe: (script) => ipcRenderer.invoke("execute-in-iframe", script),
+  getSavedCredentials: () => ipcRenderer.invoke("get-saved-credentials"),
+  saveSavedCredentials: (basic) => ipcRenderer.invoke("save-saved-credentials", basic),
 });
