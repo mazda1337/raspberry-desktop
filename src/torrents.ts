@@ -36,6 +36,28 @@ let torrentsSearch: { kpTitle: string; year: string | null; altname: string | nu
 };
 let torrentsButtonsReady = false;
 
+// Запасные парсеры — сторонние JacRed: нашего index3.html там нет, открываем их SPA с поиском в URL
+const BACKUP_PARSERS = [
+  { id: 'maxvol', label: 'Запасной 1 (jr.maxvol.pro)', url: 'https://jr.maxvol.pro' },
+  { id: 'jacred', label: 'Запасной 2 (jac.red)', url: 'https://jac.red' },
+];
+
+function selectedParserId(): string {
+  const id = store.get('selected_torrent_parser', 'primary') as string;
+  // 'alternative' (выведенный tp.rhserv.vu) и прочие неизвестные значения — на основной
+  return BACKUP_PARSERS.some(p => p.id === id) ? id : 'primary';
+}
+
+function parserMenuItems(): Electron.MenuItemConstructorOptions[] {
+  const selected = selectedParserId();
+  return [{ id: 'primary', label: 'Основной (reyohoho.space)' }, ...BACKUP_PARSERS].map(p => ({
+    label: p.label,
+    type: 'radio' as const,
+    checked: selected === p.id,
+    click: () => switchTorrentParser(p.id),
+  }));
+}
+
 const videoExtensions = [".webm", ".mkv", ".flv", ".vob", ".ogv", ".ogg", ".rrc", ".gifv",
   ".mng", ".mov", ".avi", ".qt", ".wmv", ".yuv", ".rm", ".asf", ".amv", ".mp4", ".m4p", ".m4v",
   ".mpg", ".mp2", ".mpeg", ".mpe", ".mpv", ".m4v", ".svi", ".3gp", ".3g2", ".mxf", ".roq", ".nsv",
@@ -170,8 +192,6 @@ function openWithSystemDefault(url: string): void {
 }
 
 function createMenu(): Menu {
-  const selectedParser = store.get('selected_torrent_parser', 'primary') as string;
-
   const template: (Electron.MenuItemConstructorOptions | Electron.MenuItem)[] = [
     {
       label: 'Настройки',
@@ -187,24 +207,7 @@ function createMenu(): Menu {
         },
         {
           label: 'Торрент парсер',
-          submenu: [
-            {
-              label: 'Основной (reyohoho.space)',
-              type: 'radio',
-              checked: selectedParser === 'primary',
-              click: () => {
-                switchTorrentParser('primary');
-              }
-            },
-            {
-              label: 'Альтернативный (tp.rhserv.vu)',
-              type: 'radio',
-              checked: selectedParser === 'alternative',
-              click: () => {
-                switchTorrentParser('alternative');
-              }
-            }
-          ]
+          submenu: parserMenuItems()
         }
       ]
     }
@@ -384,21 +387,15 @@ function openMagnetInputDialog(): void {
   });
 }
 
-function switchTorrentParser(parserType: 'primary' | 'alternative'): void {
-  const currentParser = store.get('selected_torrent_parser', 'primary') as string;
-
-  if (currentParser === parserType) {
+function switchTorrentParser(parserId: string): void {
+  if (selectedParserId() === parserId) {
     return;
   }
 
-  store.set('selected_torrent_parser', parserType);
-
-  const parserUrl = parserType === 'primary'
-    ? appConfig!.torrent_parser_url
-    : appConfig!.torrent_parser_url2;
+  store.set('selected_torrent_parser', parserId);
 
   if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.loadURL(`${parserUrl}/index3.html?rand=${Date.now()}`);
+    mainWindow.loadURL(getCurrentTorrentParserUrl());
     if (process.platform === 'darwin') {
       Menu.setApplicationMenu(createMenu());
     } else {
@@ -408,10 +405,9 @@ function switchTorrentParser(parserType: 'primary' | 'alternative'): void {
 }
 
 function getCurrentTorrentParserUrl(): string {
-  const selectedParser = store.get('selected_torrent_parser', 'primary') as string;
-  return selectedParser === 'primary'
-    ? appConfig!.torrent_parser_url
-    : appConfig!.torrent_parser_url2;
+  const backup = BACKUP_PARSERS.find(p => p.id === selectedParserId());
+  if (!backup) return `${appConfig!.torrent_parser_url}/index3.html?rand=${Date.now()}`;
+  return `${backup.url}/?s=${encodeURIComponent(torrentsSearch.kpTitle)}&exact=1`;
 }
 
 export async function createTorrentsWindow(kpTitle: string, year: string | null, altname: string | null, config: AppConfig, token: string): Promise<void> {
@@ -423,8 +419,8 @@ export async function createTorrentsWindow(kpTitle: string, year: string | null,
 
   // Dedicated key only — do not fall back to main window 'bounds'
   const windowState = loadWindowState(store, 'torrentsWindowState');
-  const parserUrl = `${getCurrentTorrentParserUrl()}/index3.html?rand=${Date.now()}`;
   torrentsSearch = { kpTitle, year, altname };
+  const parserUrl = getCurrentTorrentParserUrl();
 
   if (mainWindow && !mainWindow.isDestroyed()) {
     showWindowWithState(mainWindow, windowState);
@@ -485,7 +481,7 @@ export async function createTorrentsWindow(kpTitle: string, year: string | null,
   mainWindow.loadURL(parserUrl);
 
   mainWindow.webContents.on('did-fail-load', (event, errorCode, errorDescription, validatedURL) => {
-    if (validatedURL.includes('index3.html')) {
+    if (validatedURL.includes('index3.html') || BACKUP_PARSERS.some(p => validatedURL.startsWith(p.url))) {
       dialog.showMessageBox(mainWindow!, {
         noLink: true,
         type: 'error',
@@ -497,20 +493,7 @@ export async function createTorrentsWindow(kpTitle: string, year: string | null,
           const menu = Menu.buildFromTemplate([
             {
               label: 'Торрент парсер',
-              submenu: [
-                {
-                  label: 'Основной (reyohoho.space)',
-                  type: 'radio',
-                  checked: store.get('selected_torrent_parser', 'primary') === 'primary',
-                  click: () => switchTorrentParser('primary')
-                },
-                {
-                  label: 'Альтернативный (tp.rhserv.vu)',
-                  type: 'radio',
-                  checked: store.get('selected_torrent_parser', 'primary') === 'alternative',
-                  click: () => switchTorrentParser('alternative')
-                }
-              ]
+              submenu: parserMenuItems()
             }
           ]);
           if (mainWindow && !mainWindow.isDestroyed()) {
@@ -811,20 +794,7 @@ ipcMain.on('open-parser-selection', () => {
     const menu = Menu.buildFromTemplate([
       {
         label: 'Торрент парсер',
-        submenu: [
-          {
-            label: 'Основной (reyohoho.space)',
-            type: 'radio',
-            checked: store.get('selected_torrent_parser', 'primary') === 'primary',
-            click: () => switchTorrentParser('primary')
-          },
-          {
-            label: 'Альтернативный (tp.rhserv.vu)',
-            type: 'radio',
-            checked: store.get('selected_torrent_parser', 'primary') === 'alternative',
-            click: () => switchTorrentParser('alternative')
-          }
-        ]
+        submenu: parserMenuItems()
       }
     ]);
     menu.popup({ window: mainWindow });
@@ -1152,6 +1122,9 @@ function setupButtons(kpTitle: string, year: string | null, altname: string | nu
         background: #d1d1d1;
       }
     `);
+
+    // Автопоиск только для нашего index3.html, запасным поиск уже передан в URL
+    if (!mainWindow.webContents.getURL().includes('index3.html')) return;
 
     const { kpTitle: title, year: y, altname: alt } = torrentsSearch;
     const searchTorrents = `
